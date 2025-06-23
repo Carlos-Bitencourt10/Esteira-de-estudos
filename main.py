@@ -32,6 +32,8 @@ class EstudoOrchestrator:
             'uptime_start': datetime.now()
         }
         
+        self.http_session = None
+        
         # Carrega configurações das variáveis de ambiente
         self.config = {
             'openai_key': os.getenv('OPENAI_API_KEY'),
@@ -44,6 +46,21 @@ class EstudoOrchestrator:
         }
         
         logger.info("🚀 Esteira de Produção Inteligente inicializada")
+    
+    async def initialize_session(self):
+        """Initialize HTTP session for API calls"""
+        if self.http_session is None:
+            connector = aiohttp.TCPConnector(limit=100, limit_per_host=30)
+            timeout = aiohttp.ClientTimeout(total=30)
+            self.http_session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=timeout
+            )
+    
+    async def cleanup(self):
+        """Cleanup resources"""
+        if self.http_session:
+            await self.http_session.close()
     
     async def process_study(self, study_data: Dict) -> Dict:
         """Processa um estudo (versão demo)"""
@@ -109,7 +126,11 @@ class EstudoOrchestrator:
     
     async def test_apis(self) -> Dict:
         """Testa conectividade com as APIs"""
+        await self.initialize_session()
         results = {}
+        
+        if not self.http_session:
+            return {'error': 'HTTP session not initialized'}
         
         # Teste OpenAI
         try:
@@ -123,17 +144,15 @@ class EstudoOrchestrator:
                 "max_tokens": 5
             }
             
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=30
-                ) as response:
-                    results['openai'] = {
-                        'status': 'ok' if response.status == 200 else 'error',
-                        'response_time': '~1s'
-                    }
+            async with self.http_session.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                results['openai'] = {
+                    'status': 'ok' if response.status == 200 else 'error',
+                    'response_time': '~1s'
+                }
         except Exception as e:
             results['openai'] = {'status': 'error', 'error': str(e)}
         
@@ -144,16 +163,14 @@ class EstudoOrchestrator:
                 "Authorization": f"Bearer {self.config['supabase_key']}"
             }
             
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{self.config['supabase_url']}/rest/v1/",
-                    headers=headers,
-                    timeout=30
-                ) as response:
-                    results['supabase'] = {
-                        'status': 'ok' if response.status == 200 else 'error',
-                        'response_time': '~500ms'
-                    }
+            async with self.http_session.get(
+                f"{self.config['supabase_url']}/rest/v1/",
+                headers=headers
+            ) as response:
+                results['supabase'] = {
+                    'status': 'ok' if response.status == 200 else 'error',
+                    'response_time': '~500ms'
+                }
         except Exception as e:
             results['supabase'] = {'status': 'error', 'error': str(e)}
         
@@ -340,6 +357,8 @@ async def main():
         
         logger.info(f"🌐 Iniciando servidor na porta {port}")
         
+        await orchestrator.initialize_session()
+        
         # Cria aplicação
         app = await create_app()
         
@@ -354,11 +373,15 @@ async def main():
         logger.info("🚀 Esteira de Produção Inteligente Online!")
         
         # Mantém servidor rodando
-        while True:
-            await asyncio.sleep(1)
+        try:
+            while True:
+                await asyncio.sleep(1)
+        finally:
+            await orchestrator.cleanup()
             
     except Exception as e:
         logger.error(f"❌ Erro no servidor: {e}")
+        await orchestrator.cleanup()
         raise
 
 if __name__ == "__main__":
